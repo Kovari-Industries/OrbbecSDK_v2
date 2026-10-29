@@ -765,8 +765,26 @@ void ObV4lGmslDevicePort::captureLoop(std::shared_ptr<V4lDeviceHandleGmsl> devHa
                             }
                         }
 
-                        videoFrame->setSystemTimeStampUsec(utils::getNowTimesUs());
-                        videoFrame->setSteadyTimeStampUsec(utils::getSteadyTimeUs());
+                        // The kernel stamps each buffer at hardware start of frame. With
+                        // a VI driver that reports CLOCK_MONOTONIC (the clock steady_clock
+                        // reads), use that stamp instead of the dequeue time; dequeue adds
+                        // scheduling scatter and a per-start bias. Anything else (another
+                        // clock, a future or stale stamp) keeps the dequeue time.
+                        {
+                            const uint64_t nowSteadyUs = utils::getSteadyTimeUs();
+                            const uint64_t nowSystemUs = utils::getNowTimesUs();
+                            const uint64_t captureUs   = static_cast<uint64_t>(buf.timestamp.tv_sec) * 1000000ULL
+                                                       + static_cast<uint64_t>(buf.timestamp.tv_usec);
+                            const bool     monotonic   = (buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+                            if(monotonic && captureUs > 0 && captureUs <= nowSteadyUs && nowSteadyUs - captureUs < 1000000ULL) {
+                                videoFrame->setSteadyTimeStampUsec(captureUs);
+                                videoFrame->setSystemTimeStampUsec(nowSystemUs - (nowSteadyUs - captureUs));
+                            }
+                            else {
+                                videoFrame->setSystemTimeStampUsec(nowSystemUs);
+                                videoFrame->setSteadyTimeStampUsec(nowSteadyUs);
+                            }
+                        }
                         // videoFrame->setNumber(buf.sequence);
                         // for debug use. it is not necessary
                         // auto metaFrameCount=*(uint32_t *)(uvc_payload_header);
